@@ -1,70 +1,14 @@
 package main
 
 import (
-	"fmt"
 	"image/color"
 	"log"
 	"os"
-	"os/exec"
-	"text/template"
 	"time"
 
 	"gonum.org/v1/plot"
 	"gonum.org/v1/plot/plotter"
 	"gonum.org/v1/plot/vg"
-)
-
-var (
-	povTemplate = template.Must(template.New("pov").Parse(`
-#version 3.7;
-
-#include "colors.inc"
-#include "sunpos.inc"
-
-global_settings {
-	ambient_light White
-	assumed_gamma 1.0
-}
-  
-background { color Blue }
-
-camera {
-  location <10*12,15*12,-15*12>
-  look_at <10*12,0,10*12>
-}
-
-#macro testLit(Y,M,D, H,Min, Lstm, TestPos)
-  #local Sun = SunPos(Y,M,D, H,Min, Lstm, {{.Lat}},{{.Lon}});
-  #local Norm = <0,0,0>;
-  #local Intersect = trace(scene, TestPos, Sun - TestPos, Norm);
-  // Return true if TestPos is lit bit the sun.
-  (vlength(Norm)=0) 
-#end
-#fopen TESTOUT "{{.OutPath}}" write
-#declare TestPos = <{{index .TestPos 0}}, {{index .TestPos 1}}, {{index .TestPos 2}}>;
-
-#declare scene =
-`))
-
-	testSceneTemplate = template.Must(template.New("").Parse(`
-#declare sunpos = SunPos(2022,11,8, 15,00, 0, 42.4195011,-71.2064993);
-
-object {
-	scene
-	texture {
-	  pigment { color Yellow }
-	}
-  }
-
-  light_source {
-	sunpos
-	color White
-}
-
-sphere {
-	TestPos, 6
-}
-`))
 )
 
 // Notes about SketchUp STL exports:
@@ -91,7 +35,12 @@ const (
 )
 
 func main() {
-	var testPos = [3]float64{8 * 12, 6, 18 * 12}
+	// Y=0 is 90' elevation in the drawings
+	var testPos = [3]float64{0, 8 * 12, 0}
+
+	// TODO: Generate a POV rendering showing the test point and the
+	// compass directions at some reasonable time and day. Where should
+	// the camera be?
 
 	mesh, err := ReadSTL(os.Stdin)
 	if err != nil {
@@ -100,40 +49,37 @@ func main() {
 
 	var times []time.Time
 	t := time.Date(2022, 1, 1, 0, 0, 0, 0, time.Local)
+	increment := time.Minute
 	for t.Year() == 2022 {
 		times = append(times, t)
-		t = t.Add(time.Minute)
+		t = t.Add(increment)
 	}
 
-	// TODO: Maybe include source of testLit (and ToPOV?)?
+	// TODO: Maybe include source of ComputeSunPos (and ToPOV?)?
 	ck := MakeCacheKey(mesh, lat, lon, testPos, times)
-	var isLit []bool
-	if !ck.Load(&isLit) {
-		isLit = testLit(mesh, lat, lon, testPos, times)
-		ck.Save(isLit)
+	var sunPos []SunPos
+	if !ck.Load(&sunPos) {
+		sunPos = ComputeSunPos(mesh, lat, lon, testPos, times)
+		ck.Save(sunPos)
 	}
 
 	// Assemble runs
 	var runs [][2]time.Time
-	for i := 0; i < len(times); {
-		if !isLit[i] {
-			// Skip to the next lit time.
-			for i < len(isLit) && !isLit[i] {
-				i++
-			}
-			continue
-		}
-
+	for i := 0; i < len(sunPos); {
 		// Gather a run
 		j := i
-		for j < len(isLit) && isLit[j] && times[i].YearDay() == times[j].YearDay() {
+		for j < len(sunPos) && sunPos[i].Lit == sunPos[j].Lit && sameDay(sunPos[i].T, sunPos[j].T) {
 			j++
 		}
-		runs = append(runs, [2]time.Time{times[i], times[j]})
+		if sunPos[i].Lit && j < len(sunPos) {
+			runs = append(runs, [2]time.Time{sunPos[i].T, sunPos[j].T})
+		}
 		i = j
 	}
 
 	plt := plot.New()
+	// TODO: The default tick marks are *horrible* for time ticks. I
+	// guess I'll have to compute those myself. :(
 	xticks := plot.TimeTicks{Format: "01-02"}
 	plt.X.Tick.Marker = xticks
 	yticks := plot.TimeTicks{Format: "3:04PM"}
@@ -168,14 +114,17 @@ func main() {
 		poly.Color = color.RGBA{R: 255, G: 0, B: 0, A: 255}
 		poly.LineStyle.Width = 0
 		plt.Add(poly)
-	} else {
-		states := make([]state, len(isLit))
-		for i, l := range isLit {
-			if l {
+	} else if false {
+		states := make([]state, len(sunPos))
+		for i, sp := range sunPos {
+			if sp.Lit {
 				states[i] = stateSun
 			}
 		}
 		plotChangesUsingPolys(plt, times, states)
+	} else {
+		// TODO: Supply elevation
+		plotHeatMap(plt, increment, sunPos, 0)
 	}
 	err = plt.Save(20*vg.Centimeter, 15*vg.Centimeter, "test2.png")
 	if err != nil {
@@ -183,67 +132,14 @@ func main() {
 	}
 }
 
-func testLit(mesh *Mesh, lat, lon float64, testPos [3]float64, times []time.Time) []bool {
-	// As of Pov-Ray 3.7, it only supports input from stdin on DOS (?!)
-	src, err := os.CreateTemp("", "shade-*.pov")
-	if err != nil {
-		log.Fatalf("creating temporary file: %s", err)
-	}
-	defer os.Remove(src.Name())
+var splitTimeDay = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	out, err := os.CreateTemp("", "shade-*.out")
-	if err != nil {
-		log.Fatalf("creating temporary file: %s", err)
-	}
-	out.Close()
-	defer os.Remove(out.Name())
-
-	var tmplArgs struct {
-		Lat, Lon float64
-		TestPos  [3]float64
-		OutPath  string
-	}
-	tmplArgs.Lat, tmplArgs.Lon = lat, lon
-	tmplArgs.TestPos = testPos
-	tmplArgs.OutPath = out.Name()
-	if err := povTemplate.Execute(src, &tmplArgs); err != nil {
-		log.Fatalf("writing POV-Ray input: %s", err)
-	}
-	if err := mesh.ToPOV(src); err != nil {
-		log.Fatalf("writing POV-Ray input: %s", err)
-	}
-	for _, t := range times {
-		// Convert the time to UTC and use a 0 timezone meridian. This
-		// is easier than figuring out the meridian. SunPos will
-		// complain, but it works fine.
-		utc := t.In(time.UTC)
-		fmt.Fprintf(src, "#write(TESTOUT, testLit(%d,%d,%d, %d,%d, %d, TestPos))\n", utc.Year(), utc.Month(), utc.Day(), utc.Hour(), utc.Minute(), 0)
-	}
-	if err := src.Close(); err != nil {
-		log.Fatalf("writing POV-Ray input: %s", err)
-	}
-
-	// Run povray
-	pov := exec.Command("povray",
-		"+I"+src.Name(), // Input
-		"-D",            // Disable display preview
-		"-F",            // Disable file output
-		"+H1", "+W1",    // 1x1 pixel output (0x0 isn't supported)
-		"-GD", "-GR", "-GS", // Disable most output
-	)
-	pov.Stdout, pov.Stderr = os.Stdout, os.Stderr
-	if err := pov.Run(); err != nil {
-		log.Fatalf("running POV-Ray: %s", err)
-	}
-
-	// Read the output
-	outData, err := os.ReadFile(out.Name())
-	if err != nil {
-		log.Fatalf("reading shade output file: %s", err)
-	}
-	isLit := make([]bool, len(outData))
-	for i := range outData {
-		isLit[i] = outData[i] == '1'
-	}
-	return isLit
+// splitTime splits t into day and time of day. For the day, we put it
+// at noon to "center" it on that date. In all cases, we put the result
+// in UTC since that's the time zone gonum will render it in and it
+// avoids further complications with DST.
+func splitTime(t time.Time) (day, tod time.Time) {
+	day = time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, time.UTC)
+	tod = time.Date(2000, 1, 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
+	return
 }

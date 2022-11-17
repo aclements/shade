@@ -53,13 +53,10 @@ func makeVisualChanges(changes []change) (vChanges []vChange) {
 	var baseDate = time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
 	for _, c := range changes {
 		t := c.t
-		// Split into day and time of day. For the day, we put it at noon to
-		// "center" it on that date. In all cases, we put the result in UTC
-		// since that's the time zone gonum will render it in.
-		day := time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, time.UTC)
+		day, tod := splitTime(t)
 		xi := int(day.Sub(baseDate) / (24 * time.Hour))
 		x := day.Unix()
-		y := time.Date(2000, 1, 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC).Unix()
+		y := tod.Unix()
 		xy := plotter.XY{X: float64(x), Y: float64(y)}
 		vChanges = append(vChanges, vChange{c, xy, xi})
 	}
