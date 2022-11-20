@@ -9,7 +9,9 @@ import (
 	"gonum.org/v1/plot/plotter"
 )
 
-func plotHeatMap(plt *plot.Plot, increment time.Duration, sunPos []SunPos, elevationFeet float64) {
+func (o *IntensityOverTime) HeatMap() *plot.Plot {
+	plt := o.newPlot()
+
 	type xy struct {
 		day, tod  time.Time
 		intensity float64
@@ -31,15 +33,15 @@ func plotHeatMap(plt *plot.Plot, increment time.Duration, sunPos []SunPos, eleva
 	// start from 0, but for the row range, we narrow down to just the
 	// lit times.
 	var cMax, rMin, rMax int
-	startDay, _ := splitTime(sunPos[0].T)
+	startDay, _ := splitTime(o.sunPos[0].T)
 	var startTOD time.Time
-	xys := make([]xy, len(sunPos))
-	for i, sun := range sunPos {
+	xys := make([]xy, len(o.sunPos))
+	for i, sun := range o.sunPos {
 		xy := &xys[i]
 		xy.day, xy.tod = splitTime(sun.T)
-		xy.intensity = sun.GlobalIntensity(elevationFeet)
+		xy.intensity = sun.GlobalIntensity(o.elevationFeet)
 		xy.col = int(xy.day.Sub(startDay) / (24 * time.Hour))
-		xy.row = int(xy.tod.Sub(splitTimeDay) / increment)
+		xy.row = int(xy.tod.Sub(splitTimeDay) / o.increment)
 		if xy.col > cMax {
 			cMax = xy.col
 		}
@@ -67,7 +69,7 @@ func plotHeatMap(plt *plot.Plot, increment time.Duration, sunPos []SunPos, eleva
 		}
 		intensity[xy.col][xy.row-rMin] = xy.intensity
 	}
-	grid := &sunIntensityGrid{intensity, startDay, startTOD, increment}
+	grid := &sunIntensityGrid{intensity, startDay, startTOD, o.increment}
 
 	// Finally, construct the heat map.
 	pal := palette.Heat(256, 1)
@@ -75,6 +77,8 @@ func plotHeatMap(plt *plot.Plot, increment time.Duration, sunPos []SunPos, eleva
 	hm.Underflow = color.Black
 	hm.Rasterized = true
 	plt.Add(hm)
+
+	return plt
 }
 
 type sunIntensityGrid struct {
@@ -112,5 +116,8 @@ func (si *sunIntensityGrid) Min() float64 {
 
 func (si *sunIntensityGrid) Max() float64 {
 	// Solar radiation at sea level on the equator at noon.
+	//
+	// TODO: It's higher at higher elevations. Maybe I should just let
+	// gonum find the max?
 	return 1042
 }

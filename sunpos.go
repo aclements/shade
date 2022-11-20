@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
@@ -11,9 +12,13 @@ import (
 	"time"
 )
 
+// TODO: SunPos is a weird type. It should probably just be time and
+// position and I should have something else with time and intensity.
+
 type SunPos struct {
-	T   time.Time
-	Lit bool // Whether the test point is lit by the sun
+	T time.Time
+
+	Light float64 // Multiplier of direct illumination, between 0 and 1
 
 	// Altitude is the altitude of the sun in the alt-azimuth coordinate
 	// system, in degrees. This ranges from -90 to 90, where 0 is the
@@ -54,14 +59,63 @@ func (p SunPos) GlobalIntensity(elevationFeet float64) (wattsPerSquareMeter floa
 	iDirect := 1353 * ((1-a*h)*math.Pow(0.7, math.Pow(airMass, 0.678)) + a*h)
 
 	// Diffuse radiation is ~10% of direct radiation.
-	if p.Lit {
-		return 1.1 * iDirect
-	} else {
-		return 0.1 * iDirect
-	}
+	return (0.1 + p.Light) * iDirect
 }
 
-func ComputeSunPos(mesh *Mesh, lat, lon float64, testPos [3]float64, times []time.Time) []SunPos {
+func (m *ShadeModel) computeSunPos(testPos [3]float64, times []time.Time) []SunPos {
+	outData := m.withPOV(testPos, false, func(src io.Writer) {
+		for _, t := range times {
+			// Convert the time to UTC and use a 0 timezone meridian. This
+			// is easier than figuring out the meridian. SunPos will
+			// complain, but it works fine.
+			utc := t.In(time.UTC)
+			fmt.Fprintf(src, "setSun(%d,%d,%d, %d,%d, %d)\n", utc.Year(), utc.Month(), utc.Day(), utc.Hour(), utc.Minute(), 0)
+			for i := range m.layers {
+				fmt.Fprintf(src, "testHit(mesh%d)\n", i)
+			}
+		}
+	})
+
+	poses := make([]SunPos, len(times))
+	for i, t := range times {
+		al := float64(int32(binary.LittleEndian.Uint32(outData[0:]))) / math.MaxInt32 * 90
+		outData = outData[4:]
+		light := 1.0
+		for _, l := range m.layers {
+			hit := (outData[0] != 0)
+			if hit && light != 0 {
+				light *= l.transmissivity(t)
+			}
+			outData = outData[1:]
+		}
+		poses[i] = SunPos{T: t, Light: light, Altitude: al}
+	}
+	if len(outData) > 0 {
+		log.Fatalf("unexpected left-over output from POV-Ray (%d bytes)", len(outData))
+	}
+	return poses
+}
+
+func (m *ShadeModel) Render(testPos [3]float64, t time.Time) {
+	m.withPOV(testPos, true, func(src io.Writer) {
+		utc := t.In(time.UTC)
+		fmt.Fprintf(src, "setSun(%d,%d,%d, %d,%d, %d)\n", utc.Year(), utc.Month(), utc.Day(), utc.Hour(), utc.Minute(), 0)
+		if err := testSceneTemplate.Execute(src, nil); err != nil {
+			log.Fatalf("writing POV-Ray input: %s", err)
+		}
+	})
+}
+
+func (m *ShadeModel) withPOV(testPos [3]float64, render bool, cb func(src io.Writer)) []byte {
+	// The POV-Ray coordinate system looks like:
+	//
+	//	Y
+	//	|  Z/north
+	//	| /
+	//	|/____ X/east
+	//
+	// So we have to swap Y and Z between the STL and POV systems
+
 	// As of Pov-Ray 3.7, it only supports input from stdin on DOS (?!)
 	src, err := os.CreateTemp("", "shade-*.pov")
 	if err != nil {
@@ -74,41 +128,45 @@ func ComputeSunPos(mesh *Mesh, lat, lon float64, testPos [3]float64, times []tim
 		log.Fatalf("creating temporary file: %s", err)
 	}
 	out.Close()
-	//defer os.Remove(out.Name())
+	defer os.Remove(out.Name())
 
 	var tmplArgs struct {
 		Lat, Lon float64
 		TestPos  [3]float64
 		OutPath  string
 	}
-	tmplArgs.Lat, tmplArgs.Lon = lat, lon
+	tmplArgs.Lat, tmplArgs.Lon = m.lat, m.lon
 	tmplArgs.TestPos = testPos
 	tmplArgs.OutPath = out.Name()
 	if err := povTemplate.Execute(src, &tmplArgs); err != nil {
 		log.Fatalf("writing POV-Ray input: %s", err)
 	}
-	if err := mesh.ToPOV(src); err != nil {
-		log.Fatalf("writing POV-Ray input: %s", err)
+	for i, l := range m.layers {
+		fmt.Fprintf(src, "#declare mesh%d = ", i)
+		if err := l.mesh.ToPOV(src); err != nil {
+			log.Fatalf("writing POV-Ray input: %s", err)
+		}
 	}
-	for _, t := range times {
-		// Convert the time to UTC and use a 0 timezone meridian. This
-		// is easier than figuring out the meridian. SunPos will
-		// complain, but it works fine.
-		utc := t.In(time.UTC)
-		fmt.Fprintf(src, "testLit(%d,%d,%d, %d,%d, %d, TestPos)\n", utc.Year(), utc.Month(), utc.Day(), utc.Hour(), utc.Minute(), 0)
-	}
+	cb(src)
 	if err := src.Close(); err != nil {
 		log.Fatalf("writing POV-Ray input: %s", err)
 	}
 
 	// Run povray
-	pov := exec.Command("povray",
-		"+I"+src.Name(), // Input
-		"-D",            // Disable display preview
-		"-F",            // Disable file output
-		"+H1", "+W1",    // 1x1 pixel output (0x0 isn't supported)
+	args := []string{
+		"+I" + src.Name(),   // Input
+		"-F",                // Disable file output
 		"-GD", "-GR", "-GS", // Disable most output
-	)
+	}
+	if render {
+		args = append(args, "+P") // Pause
+	} else {
+		args = append(args, []string{
+			"-D",         // Disable display preview
+			"+H1", "+W1", // 1x1 pixel output (0x0 isn't supported)
+		}...)
+	}
+	pov := exec.Command("povray", args...)
 	pov.Stdout, pov.Stderr = os.Stdout, os.Stderr
 	if err := pov.Run(); err != nil {
 		log.Fatalf("running POV-Ray: %s", err)
@@ -119,14 +177,7 @@ func ComputeSunPos(mesh *Mesh, lat, lon float64, testPos [3]float64, times []tim
 	if err != nil {
 		log.Fatalf("reading shade output file: %s", err)
 	}
-	poses := make([]SunPos, len(times))
-	for i, t := range times {
-		lit := outData[0] != 0
-		al := float64(int32(binary.LittleEndian.Uint32(outData[1:]))) / math.MaxInt32 * 90
-		outData = outData[1+4:]
-		poses[i] = SunPos{T: t, Lit: lit, Altitude: al}
-	}
-	return poses
+	return outData
 }
 
 var (
@@ -143,42 +194,43 @@ global_settings {
   
 background { color Blue }
 
-camera {
-  location <10*12,15*12,-15*12>
-  look_at <10*12,0,10*12>
-}
-
-#macro testLit(Y,M,D, H,Min, Lstm, TestPos)
-  #local Sun = SunPos(Y,M,D, H,Min, Lstm, {{.Lat}},{{.Lon}});
-  #local Norm = <0,0,0>;
-  #local Intersect = trace(scene, TestPos, Sun - TestPos, Norm);
-  #local Lit = (vlength(Norm)=0);
-  #write(TESTOUT, uint8 Lit)
+#macro setSun(Y,M,D, H,Min, Lstm)
+  #declare Sun = SunPos(Y,M,D, H,Min, Lstm, {{.Lat}},{{.Lon}});
   #write(TESTOUT, sint32le Al / 90 * 2147483647)
 #end
+#macro testHit(Mesh)
+  #local Norm = <0,0,0>;
+  #local Intersect = trace(Mesh, TestPos, Sun - TestPos, Norm);
+  #local Hit = (vlength(Norm)!=0);
+  #write(TESTOUT, uint8 Hit)
+#end
 #fopen TESTOUT "{{.OutPath}}" write
-#declare TestPos = <{{index .TestPos 0}}, {{index .TestPos 1}}, {{index .TestPos 2}}>;
+#declare TestPos = <{{index .TestPos 0}}, {{index .TestPos 2}}, {{index .TestPos 1}}>;
 
-#declare scene =
+camera {
+	location <15*12,20*12,-20*12>
+	look_at TestPos
+  }
+
 `))
 
+	// TODO: Show all meshes
 	testSceneTemplate = template.Must(template.New("").Parse(`
-#declare sunpos = SunPos(2022,11,8, 15,00, 0, 42.4195011,-71.2064993);
-
 object {
-	scene
+	mesh0
 	texture {
 	  pigment { color Yellow }
 	}
   }
 
   light_source {
-	sunpos
+	Sun
 	color White
 }
 
 sphere {
 	TestPos, 6
+	texture { pigment { color Green }}
 }
 `))
 )
