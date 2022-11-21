@@ -139,12 +139,14 @@ func (m *ShadeModel) IntensityOverYear(year int, testPos [3]float64) *IntensityO
 
 func (o *IntensityOverTime) newPlot() *plot.Plot {
 	plt := plot.New()
-	// TODO: The default tick marks are *horrible* for time ticks. I
-	// guess I'll have to compute those myself. :(
-	xticks := plot.TimeTicks{Format: "01-02"}
+	// The default plot.TimeTicks are terrible, so we compute our own.
+	xticks := dayOfYearTicks{}
+	//xticks := solsticeTicks{}
 	plt.X.Tick.Marker = xticks
-	yticks := plot.TimeTicks{Format: "3:04PM"}
+	plt.X.Label.Text = "Day of year"
+	yticks := timeOfDayTicks{6}
 	plt.Y.Tick.Marker = yticks
+	plt.Y.Label.Text = "Time of day"
 	plt.BackgroundColor = color.Black
 	for _, elt := range []*color.Color{
 		&plt.Title.TextStyle.Color,
@@ -172,4 +174,123 @@ func splitTime(t time.Time) (day, tod time.Time) {
 	day = time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, time.UTC)
 	tod = time.Date(2000, 1, 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
 	return
+}
+
+type timeOfDayTicks struct {
+	targetTicks int // Create around targetTicks number of ticks
+}
+
+var todScales = []time.Duration{12 * time.Hour, 3 * time.Hour, time.Hour, 30 * time.Minute, 10 * time.Minute, 5 * time.Minute, time.Minute}
+
+func (o timeOfDayTicks) Ticks(min, max float64) []plot.Tick {
+	valToTime := plot.UTCUnixTime
+	minT, maxT := valToTime(min), valToTime(max)
+	baseT := time.Date(minT.Year(), minT.Month(), minT.Day(), 0, 0, 0, 0, time.UTC)
+	// Compute duration since midnight.
+	minD, maxD := minT.Sub(baseT), maxT.Sub(baseT)
+	// Compute how many ticks would appear in [minD, maxD] for each
+	// scale and pick the closest to targetTicks.
+	best, bestNDelta := time.Duration(0), 0
+	minor := time.Duration(0)
+	for i, scale := range todScales {
+		first := int((minD + scale - 1) / scale)
+		last := int(maxD / scale)
+		if n := last - first + 1; n > 0 {
+			delta := n - o.targetTicks
+			if delta < 0 {
+				delta = -delta
+			}
+			if best == 0 || delta < bestNDelta {
+				best, bestNDelta = scale, delta
+				if i+1 < len(todScales) {
+					minor = todScales[i+1]
+				} else {
+					minor = 0
+				}
+			}
+		}
+	}
+	if best == 0 {
+		best, minor = todScales[0], todScales[1]
+	}
+	// Generate ticks.
+	var ticks []plot.Tick
+	first := int((minD + minor - 1) / minor)
+	last := int(maxD / minor)
+	minorFactor := int(best / minor)
+	for i := first; i <= last; i++ {
+		t := baseT.Add(time.Duration(i) * minor)
+		label := ""
+		if i%minorFactor == 0 {
+			label = t.Format("3:04PM")
+		}
+		ticks = append(ticks, plot.Tick{
+			Value: float64(t.Unix()),
+			Label: label,
+		})
+	}
+	return ticks
+}
+
+type dayOfYearTicks struct{}
+
+func (dayOfYearTicks) Ticks(min, max float64) []plot.Tick {
+	valToTime := plot.UTCUnixTime
+	minT, maxT := valToTime(min), valToTime(max)
+	year := minT.Year()
+	var ticks []plot.Tick
+	lastMajorYear := 0
+	for month := time.Month(1); ; month++ {
+		t := time.Date(year, month, 1, 12, 0, 0, 0, time.UTC)
+		if t.Before(minT) {
+			continue
+		}
+		if t.After(maxT) {
+			break
+		}
+		label := ""
+		if (t.Month()-1)%3 == 0 {
+			if lastMajorYear == t.Year() {
+				label = t.Format("1/02")
+			} else {
+				lastMajorYear = t.Year()
+				label = t.Format("1/02/2006")
+			}
+		}
+		ticks = append(ticks, plot.Tick{
+			Value: float64(t.Unix()),
+			Label: label,
+		})
+	}
+	return ticks
+}
+
+type solsticeTicks struct{}
+
+func (solsticeTicks) Ticks(min, max float64) []plot.Tick {
+	valToTime := plot.UTCUnixTime
+	minT, maxT := valToTime(min), valToTime(max)
+	year := minT.Year()
+	var ticks []plot.Tick
+	ticks = append(ticks, plot.Tick{
+		Value: min,
+		Label: minT.Format("1/02/2006"),
+	})
+	add := func(month time.Month, day int) {
+		t := time.Date(year, month, day, 12, 0, 0, 0, time.UTC)
+		if t.Before(minT) || t.After(maxT) {
+			return
+		}
+		ticks = append(ticks, plot.Tick{
+			Value: float64(t.Unix()),
+			Label: t.Format("1/02"),
+		})
+	}
+	for ; year <= maxT.Year(); year++ {
+		add(3, 20)
+		add(6, 21)
+		add(9, 22)
+		add(12, 22)
+	}
+	return ticks
 }
