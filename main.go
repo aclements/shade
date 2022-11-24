@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"gonum.org/v1/plot/vg"
 )
@@ -31,16 +32,17 @@ func main() {
 	const lon = -71.2064993
 	const elev = 200
 	var testPos = [3]float64{0, 0, 8 * 12}
+	var cameraOffset = [3]float64{40 * 12, -30 * 12, 10 * 12}
 
 	m := NewShadeModel(lat, lon, elev)
 	m.AddBuildings("house.stl")
+
+	m.Render(testPos, cameraOffset, time.Date(2022, 6, 1, 12, 0, 0, 0, time.Local), "render.png")
+
 	m.AddFoliage("house-trees.stl")
-	//m.Render(testPos, time.Date(2022, 11, 19, 12, 0, 0, 0, time.Local))
-	//return
 
 	plt := m.IntensityOverYear(2022, testPos).HeatMap()
-
-	err := plt.Save(20*vg.Centimeter, 15*vg.Centimeter, "test.png")
+	err := plt.Save(20*vg.Centimeter, 15*vg.Centimeter, "sun.png")
 	if err != nil {
 		log.Panic(err)
 	}

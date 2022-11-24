@@ -107,11 +107,6 @@ type IntensityOverTime struct {
 }
 
 func (m *ShadeModel) IntensityOverYear(year int, testPos [3]float64) *IntensityOverTime {
-	// TODO: Generate a POV rendering showing the test point and the
-	// compass directions at some reasonable time and day. Where should
-	// the camera be? I could put it at testPos and use a panoramic
-	// camera. Or I could put it above looking down.
-
 	// TODO: If I compute my own sun positions, I can skip the times
 	// below the horizon entirely.
 	var times []time.Time

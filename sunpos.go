@@ -63,7 +63,7 @@ func (p SunPos) GlobalIntensity(elevationFeet float64) (wattsPerSquareMeter floa
 }
 
 func (m *ShadeModel) computeSunPos(testPos [3]float64, times []time.Time) []SunPos {
-	outData := m.withPOV(testPos, false, func(src io.Writer) {
+	outData := m.withPOV(testPos, "", func(src io.Writer) {
 		for _, t := range times {
 			// Convert the time to UTC and use a 0 timezone meridian. This
 			// is easier than figuring out the meridian. SunPos will
@@ -96,17 +96,7 @@ func (m *ShadeModel) computeSunPos(testPos [3]float64, times []time.Time) []SunP
 	return poses
 }
 
-func (m *ShadeModel) Render(testPos [3]float64, t time.Time) {
-	m.withPOV(testPos, true, func(src io.Writer) {
-		utc := t.In(time.UTC)
-		fmt.Fprintf(src, "setSun(%d,%d,%d, %d,%d, %d)\n", utc.Year(), utc.Month(), utc.Day(), utc.Hour(), utc.Minute(), 0)
-		if err := testSceneTemplate.Execute(src, nil); err != nil {
-			log.Fatalf("writing POV-Ray input: %s", err)
-		}
-	})
-}
-
-func (m *ShadeModel) withPOV(testPos [3]float64, render bool, cb func(src io.Writer)) []byte {
+func (m *ShadeModel) withPOV(testPos [3]float64, output string, cb func(src io.Writer)) []byte {
 	// The POV-Ray coordinate system looks like:
 	//
 	//	Y
@@ -155,13 +145,17 @@ func (m *ShadeModel) withPOV(testPos [3]float64, render bool, cb func(src io.Wri
 	// Run povray
 	args := []string{
 		"+I" + src.Name(),   // Input
-		"-F",                // Disable file output
 		"-GD", "-GR", "-GS", // Disable most output
 	}
-	if render {
-		args = append(args, "+P") // Pause
+	if output != "" {
+		args = append(args,
+			"+O"+output, // Output file
+			"+P",        // Pause
+			"+A",        // Anti-alias
+		)
 	} else {
 		args = append(args, []string{
+			"-F",         // Disable file output
 			"-D",         // Disable display preview
 			"+H1", "+W1", // 1x1 pixel output (0x0 isn't supported)
 		}...)
@@ -180,19 +174,11 @@ func (m *ShadeModel) withPOV(testPos [3]float64, render bool, cb func(src io.Wri
 	return outData
 }
 
-var (
-	povTemplate = template.Must(template.New("pov").Parse(`
+var povTemplate = template.Must(template.New("pov").Parse(`
 #version 3.7;
 
 #include "colors.inc"
 #include "sunpos.inc"
-
-global_settings {
-	ambient_light White
-	assumed_gamma 1.0
-}
-  
-background { color Blue }
 
 #macro setSun(Y,M,D, H,Min, Lstm)
   #declare Sun = SunPos(Y,M,D, H,Min, Lstm, {{.Lat}},{{.Lon}});
@@ -206,31 +192,4 @@ background { color Blue }
 #end
 #fopen TESTOUT "{{.OutPath}}" write
 #declare TestPos = <{{index .TestPos 0}}, {{index .TestPos 2}}, {{index .TestPos 1}}>;
-
-camera {
-	location <15*12,20*12,-20*12>
-	look_at TestPos
-  }
-
 `))
-
-	// TODO: Show all meshes
-	testSceneTemplate = template.Must(template.New("").Parse(`
-object {
-	mesh0
-	texture {
-	  pigment { color Yellow }
-	}
-  }
-
-  light_source {
-	Sun
-	color White
-}
-
-sphere {
-	TestPos, 6
-	texture { pigment { color Green }}
-}
-`))
-)
