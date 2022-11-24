@@ -18,15 +18,7 @@ func (o *IntensityOverTime) HeatMap() *plot.Plot {
 		col, row  int
 	}
 
-	// TODO: Add a key. Unfortunately, there doesn't seem to be a
-	// built-in way to do a color bar. There's plotter.ColorBar, but I
-	// think it's meant to fill the whole plot, so maybe I have to
-	// overlay one plot on another? The examples are not useful. We
-	// should maybe at least call out "No sun", "Shadow", "Max sun"
-	//
-	// "Full/Partial shade/sun" are defined in terms of hours of "direct
-	// sunlight" (which is obviously a proxy for solar flux) and
-	// possibly what time of day (which is a proxy for temperature).
+	// TODO: Draw an outline around when the shade comes from foliage.
 
 	// Compute the visual locations on the heat map of each sunPos and
 	// figure out the bounds of the heat map. We construct columns to
@@ -75,8 +67,16 @@ func (o *IntensityOverTime) HeatMap() *plot.Plot {
 	pal := palette.Heat(256, 1)
 	hm := plotter.NewHeatMap(grid, pal)
 	hm.Underflow = color.Black
+	hm.Overflow = color.White
+	// Even in vector formats, a rasterized heatmap makes more sense.
 	hm.Rasterized = true
 	plt.Add(hm)
+
+	// Construct a legend.
+	thumbs := plotter.PaletteThumbnailers(pal)
+	plt.Legend.Add("Full shade", thumbs[0])
+	plt.Legend.Add("Partial shade", thumbs[len(thumbs)/2])
+	plt.Legend.Add("Direct sun", thumbs[len(thumbs)-1])
 
 	return plt
 }

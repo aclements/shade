@@ -147,6 +147,9 @@ func (o *IntensityOverTime) newPlot() *plot.Plot {
 	yticks := timeOfDayTicks{6}
 	plt.Y.Tick.Marker = yticks
 	plt.Y.Label.Text = "Time of day"
+	plt.Legend.Top = true
+	plt.Legend.Padding = 0.5 * plt.Legend.TextStyle.Font.Size
+
 	plt.BackgroundColor = color.Black
 	for _, elt := range []*color.Color{
 		&plt.Title.TextStyle.Color,
@@ -158,6 +161,7 @@ func (o *IntensityOverTime) newPlot() *plot.Plot {
 		&plt.Y.Tick.Color,
 		&plt.Y.Tick.Label.Color,
 		&plt.Y.Label.TextStyle.Color,
+		&plt.Legend.TextStyle.Color,
 	} {
 		*elt = color.White
 	}
