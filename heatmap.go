@@ -3,6 +3,7 @@ package main
 import (
 	"image/color"
 	"math"
+	"sort"
 	"time"
 
 	"gonum.org/v1/plot"
@@ -12,43 +13,112 @@ import (
 
 func (o *IntensityOverTime) HeatMap() *plot.Plot {
 	plt := o.newPlot()
+	// The default plot.TimeTicks are terrible, so we compute our own.
+	xticks := dayOfYearTicks{}
+	plt.X.Tick.Marker = xticks
+	plt.X.Label.Text = "Day of year"
 	plt.Title.Text = "Sun exposure through year (W/m²)"
+	yticks := timeOfDayTicks{6}
+	plt.Y.Tick.Marker = yticks
+	plt.Y.Label.Text = "Time of day"
+	o.heatMap(plt, false)
+	return plt
+}
 
+func (o *IntensityOverTime) ShadeDuration() *plot.Plot {
+	plt := o.newPlot()
+	xticks := dayOfYearTicks{}
+	plt.X.Tick.Marker = xticks
+	plt.X.Label.Text = "Day of year"
+	plt.Title.Text = "Sun duration through year"
+	yticks := durationTicks{6}
+	plt.Y.Tick.Marker = yticks
+	plt.Y.Label.Text = "Duration"
+	o.heatMap(plt, true)
+	return plt
+}
+
+func (o *IntensityOverTime) heatMap(plt *plot.Plot, sorted bool) {
 	type xy struct {
-		day, tod  time.Time
+		day       time.Time
+		tod       time.Duration
+		sun       SunPos
 		intensity float64
-		foliage   bool
 		col, row  int
 	}
-
-	// TODO: Draw an outline around when the shade comes from foliage.
 
 	// Compute the visual locations on the heat map of each sunPos and
 	// figure out the bounds of the heat map. We construct columns to
 	// start from 0, but for the row range, we narrow down to just the
 	// lit times.
 	var cMax, rMin, rMax int
+	rMax = -1
 	startDay, _ := splitTime(o.sunPos[0].T)
-	var startTOD time.Time
+	var startTOD time.Duration
 	xys := make([]xy, len(o.sunPos))
 	for i, sun := range o.sunPos {
 		xy := &xys[i]
 		xy.day, xy.tod = splitTime(sun.T)
+		xy.sun = sun
 		xy.intensity = sun.GlobalIntensity(o.elevationFeet)
-		xy.foliage = sun.Foliage
 		xy.col = int(xy.day.Sub(startDay) / (24 * time.Hour))
-		xy.row = int(xy.tod.Sub(splitTimeDay) / o.increment)
+		xy.row = int(xy.tod / o.increment)
 		if xy.col > cMax {
 			cMax = xy.col
 		}
 		if xy.intensity > 0 {
-			first := startTOD.IsZero()
+			first := rMax == -1
 			if first || xy.row < rMin {
 				rMin = xy.row
 				startTOD = xy.tod
 			}
 			if first || xy.row > rMax {
 				rMax = xy.row
+			}
+		}
+	}
+
+	if sorted {
+		// Rearrange the points so they're sorted by intensity within
+		// each day.
+		var byDay [][]xy
+		last := 0
+		for i := range xys {
+			if i > 0 && xys[i].col != xys[last].col {
+				byDay = append(byDay, xys[last:i])
+				last = i
+			}
+		}
+		byDay = append(byDay, xys[last:])
+		rMin = 0
+		rMax = 0
+		startTOD = 0
+		cat := func(t xy) int {
+			// Full sun first, then foliage, then shade, then darkness.
+			switch {
+			case t.sun.Altitude < 0:
+				return 3
+			case t.sun.Foliage:
+				return 1
+			case t.sun.Light >= 0.05:
+				return 0
+			}
+			return 2
+		}
+		for _, day := range byDay {
+			sort.Slice(day, func(i, j int) bool {
+				if c1, c2 := cat(day[i]), cat(day[j]); c1 != c2 {
+					return c1 < c2
+				}
+				return day[i].intensity > day[j].intensity
+			})
+			// Recompute row
+			for i := range day {
+				day[i].row = i
+				day[i].tod = o.increment * time.Duration(i)
+				if i > rMax && day[i].intensity > 0 {
+					rMax = i
+				}
 			}
 		}
 	}
@@ -65,7 +135,10 @@ func (o *IntensityOverTime) HeatMap() *plot.Plot {
 		if xy.row < rMin || xy.row > rMax {
 			continue
 		}
-		if xy.foliage {
+		if xy.sun.Altitude < 0 {
+			intensity[xy.col][xy.row-rMin] = -1
+			foliage[xy.col][xy.row-rMin] = math.NaN()
+		} else if xy.sun.Foliage {
 			intensity[xy.col][xy.row-rMin] = math.NaN()
 			foliage[xy.col][xy.row-rMin] = xy.intensity
 		} else {
@@ -99,14 +172,13 @@ func (o *IntensityOverTime) HeatMap() *plot.Plot {
 	plt.Legend.Add("Direct sun", thumbs[len(thumbs)-1])
 	thumbs = plotter.PaletteThumbnailers(fPal)
 	plt.Legend.Add("Foliage shade", thumbs[0])
-
-	return plt
 }
 
 type sunIntensityGrid struct {
-	intensity          [][]float64
-	startDay, startTOD time.Time
-	increment          time.Duration
+	intensity [][]float64
+	startDay  time.Time
+	startTOD  time.Duration
+	increment time.Duration
 }
 
 func (si *sunIntensityGrid) Dims() (c, r int) {
@@ -126,14 +198,13 @@ func (si *sunIntensityGrid) X(c int) float64 {
 }
 
 func (si *sunIntensityGrid) Y(r int) float64 {
-	t := si.startTOD.Add(time.Duration(r) * si.increment)
-	return float64(t.Unix())
+	t := si.startTOD + time.Duration(r)*si.increment
+	return float64(t)
 }
 
 func (si *sunIntensityGrid) Min() float64 {
-	// Return 1 rather than 0 so that the "0" value when the sun isn't
-	// in the sky renders in the underflow color.
-	return 1
+	// We use -1 when the sun isn't in the sky to render in the underflow color.
+	return 0
 }
 
 func (si *sunIntensityGrid) Max() float64 {

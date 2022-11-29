@@ -43,7 +43,11 @@ func main() {
 
 	m.AddFoliage("house-trees.stl")
 
-	plt := m.IntensityOverYear(2022, testPos).HeatMap()
+	intensity := m.IntensityOverYear(2022, testPos)
+
+	//plt := intensity.HeatMap()
+	plt := intensity.ShadeDuration()
+
 	c := vgimg.PngCanvas{Canvas: vgimg.NewWith(vgimg.UseWH(20*vg.Centimeter, 15*vg.Centimeter), vgimg.UseDPI(150))}
 	plt.Draw(draw.New(c))
 	f, err := os.Create("sun.png")

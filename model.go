@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"image/color"
 	"os"
 	"time"
@@ -136,14 +137,6 @@ func (m *ShadeModel) IntensityOverYear(year int, testPos [3]float64) *IntensityO
 
 func (o *IntensityOverTime) newPlot() *plot.Plot {
 	plt := plot.New()
-	// The default plot.TimeTicks are terrible, so we compute our own.
-	xticks := dayOfYearTicks{}
-	//xticks := solsticeTicks{}
-	plt.X.Tick.Marker = xticks
-	plt.X.Label.Text = "Day of year"
-	yticks := timeOfDayTicks{6}
-	plt.Y.Tick.Marker = yticks
-	plt.Y.Label.Text = "Time of day"
 	plt.Legend.Top = true
 	plt.Legend.Padding = 0.5 * plt.Legend.TextStyle.Font.Size
 
@@ -165,46 +158,102 @@ func (o *IntensityOverTime) newPlot() *plot.Plot {
 	return plt
 }
 
-var splitTimeDay = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
-
 // splitTime splits t into day and time of day. For the day, we put it
-// at noon to "center" it on that date. In all cases, we put the result
-// in UTC since that's the time zone gonum will render it in and it
-// avoids further complications with DST.
-func splitTime(t time.Time) (day, tod time.Time) {
+// at noon to "center" it on that date. We put the result in UTC since
+// that's the time zone gonum will render it in and it avoids further
+// complications with DST. Time of day is returned as a duration since
+// midnight.
+func splitTime(t time.Time) (day time.Time, tod time.Duration) {
 	day = time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, time.UTC)
-	tod = time.Date(2000, 1, 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
+	tod = time.Duration(t.Hour())*time.Hour + time.Duration(t.Minute())*time.Minute + time.Duration(t.Second())*time.Second + time.Duration(t.Nanosecond())*time.Nanosecond
 	return
 }
 
+// timeOfDayTicks renders a time.Duration since midnight as a time of day.
 type timeOfDayTicks struct {
 	targetTicks int // Create around targetTicks number of ticks
 }
 
-var todScales = []time.Duration{12 * time.Hour, 3 * time.Hour, time.Hour, 30 * time.Minute, 10 * time.Minute, 5 * time.Minute, time.Minute}
-
 func (o timeOfDayTicks) Ticks(min, max float64) []plot.Tick {
-	valToTime := plot.UTCUnixTime
-	minT, maxT := valToTime(min), valToTime(max)
-	baseT := time.Date(minT.Year(), minT.Month(), minT.Day(), 0, 0, 0, 0, time.UTC)
-	// Compute duration since midnight.
-	minD, maxD := minT.Sub(baseT), maxT.Sub(baseT)
+	minD, maxD := time.Duration(min), time.Duration(max)
+
+	// Find a good duration between ticks
+	best, minor := optimizeDurationTicks(minD, maxD, o.targetTicks)
+
+	// Generate ticks and labels.
+	var ticks []plot.Tick
+	first := int((minD + minor - 1) / minor)
+	last := int(maxD / minor)
+	minorFactor := int(best / minor)
+	var dayBase = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := first; i <= last; i++ {
+		t := time.Duration(i) * minor
+		label := ""
+		if i%minorFactor == 0 {
+			label = dayBase.Add(t).Format("3:04PM")
+		}
+		ticks = append(ticks, plot.Tick{
+			Value: float64(t),
+			Label: label,
+		})
+	}
+	return ticks
+}
+
+type durationTicks struct {
+	targetTicks int // Create around targetTicks number of ticks
+}
+
+func (o durationTicks) Ticks(min, max float64) []plot.Tick {
+	minD, maxD := time.Duration(min), time.Duration(max)
+	best, minor := optimizeDurationTicks(minD, maxD, o.targetTicks)
+
+	// Generate ticks and labels.
+	//
+	// TODO: The math to compute the time.Duration of each tick could be
+	// shared better.
+	var ticks []plot.Tick
+	first := int((minD + minor - 1) / minor)
+	last := int(maxD / minor)
+	minorFactor := int(best / minor)
+	for i := first; i <= last; i++ {
+		t := time.Duration(i) * minor
+		label := ""
+		if i%minorFactor == 0 {
+			if best%time.Hour == 0 {
+				label = fmt.Sprintf("%dh", int(t.Hours()))
+			} else if best%time.Minute == 0 {
+				label = fmt.Sprintf("%dh%dm", int(t.Hours()), int(t.Minutes())%60)
+			} else {
+				label = t.String()
+			}
+		}
+		ticks = append(ticks, plot.Tick{
+			Value: float64(t),
+			Label: label,
+		})
+	}
+	return ticks
+}
+
+var durationScales = []time.Duration{12 * time.Hour, 3 * time.Hour, time.Hour, 30 * time.Minute, 10 * time.Minute, 5 * time.Minute, time.Minute}
+
+func optimizeDurationTicks(minD, maxD time.Duration, targetTicks int) (best, minor time.Duration) {
 	// Compute how many ticks would appear in [minD, maxD] for each
 	// scale and pick the closest to targetTicks.
-	best, bestNDelta := time.Duration(0), 0
-	minor := time.Duration(0)
-	for i, scale := range todScales {
+	bestNDelta := 0
+	for i, scale := range durationScales {
 		first := int((minD + scale - 1) / scale)
 		last := int(maxD / scale)
 		if n := last - first + 1; n > 0 {
-			delta := n - o.targetTicks
+			delta := n - targetTicks
 			if delta < 0 {
 				delta = -delta
 			}
 			if best == 0 || delta < bestNDelta {
 				best, bestNDelta = scale, delta
-				if i+1 < len(todScales) {
-					minor = todScales[i+1]
+				if i+1 < len(durationScales) {
+					minor = durationScales[i+1]
 				} else {
 					minor = 0
 				}
@@ -212,25 +261,9 @@ func (o timeOfDayTicks) Ticks(min, max float64) []plot.Tick {
 		}
 	}
 	if best == 0 {
-		best, minor = todScales[0], todScales[1]
+		best, minor = durationScales[0], durationScales[1]
 	}
-	// Generate ticks.
-	var ticks []plot.Tick
-	first := int((minD + minor - 1) / minor)
-	last := int(maxD / minor)
-	minorFactor := int(best / minor)
-	for i := first; i <= last; i++ {
-		t := baseT.Add(time.Duration(i) * minor)
-		label := ""
-		if i%minorFactor == 0 {
-			label = t.Format("3:04PM")
-		}
-		ticks = append(ticks, plot.Tick{
-			Value: float64(t.Unix()),
-			Label: label,
-		})
-	}
-	return ticks
+	return best, minor
 }
 
 type dayOfYearTicks struct{}
