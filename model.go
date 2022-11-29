@@ -43,10 +43,12 @@ type shadeLayer struct {
 	// given date in a range of 0 to 1. For a fully opaque layer, this
 	// returns 0. For foliage, this varies over the year.
 	transmissivity func(date time.Time) float64
+
+	foliage bool
 }
 
 func (m *ShadeModel) AddBuildings(stlPath string) error {
-	return m.addLayer(stlPath, func(time.Time) float64 { return 0 })
+	return m.addLayer(stlPath, func(time.Time) float64 { return 0 }, false)
 }
 
 func (m *ShadeModel) AddFoliage(stlPath string) error {
@@ -82,10 +84,10 @@ func (m *ShadeModel) AddFoliage(stlPath string) error {
 			return 0.05 + float64(day-Aug31)/(Nov30-Aug31)*(0.5-0.05)
 		}
 	}
-	return m.addLayer(stlPath, trans)
+	return m.addLayer(stlPath, trans, true)
 }
 
-func (m *ShadeModel) addLayer(stlPath string, trans func(time.Time) float64) error {
+func (m *ShadeModel) addLayer(stlPath string, trans func(time.Time) float64, foliage bool) error {
 	f, err := os.Open(stlPath)
 	if err != nil {
 		return err
@@ -95,7 +97,7 @@ func (m *ShadeModel) addLayer(stlPath string, trans func(time.Time) float64) err
 	if err != nil {
 		return err
 	}
-	m.layers = append(m.layers, &shadeLayer{mesh, trans})
+	m.layers = append(m.layers, &shadeLayer{mesh, trans, foliage})
 	return nil
 }
 

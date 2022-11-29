@@ -18,7 +18,8 @@ import (
 type SunPos struct {
 	T time.Time
 
-	Light float64 // Multiplier of direct illumination, between 0 and 1
+	Light   float64 // Multiplier of direct illumination, between 0 and 1
+	Foliage bool    // This is blocked solely by foliage
 
 	// Altitude is the altitude of the sun in the alt-azimuth coordinate
 	// system, in degrees. This ranges from -90 to 90, where 0 is the
@@ -81,14 +82,22 @@ func (m *ShadeModel) computeSunPos(testPos [3]float64, times []time.Time) []SunP
 		al := float64(int32(binary.LittleEndian.Uint32(outData[0:]))) / math.MaxInt32 * 90
 		outData = outData[4:]
 		light := 1.0
+		building, foliage := false, false
 		for _, l := range m.layers {
 			hit := (outData[0] != 0)
 			if hit && light != 0 {
 				light *= l.transmissivity(t)
 			}
+			if hit {
+				if l.foliage {
+					foliage = true
+				} else {
+					building = true
+				}
+			}
 			outData = outData[1:]
 		}
-		poses[i] = SunPos{T: t, Light: light, Altitude: al}
+		poses[i] = SunPos{T: t, Light: light, Foliage: foliage && !building, Altitude: al}
 	}
 	if len(outData) > 0 {
 		log.Fatalf("unexpected left-over output from POV-Ray (%d bytes)", len(outData))

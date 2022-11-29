@@ -2,6 +2,7 @@ package main
 
 import (
 	"image/color"
+	"math"
 	"time"
 
 	"gonum.org/v1/plot"
@@ -11,10 +12,12 @@ import (
 
 func (o *IntensityOverTime) HeatMap() *plot.Plot {
 	plt := o.newPlot()
+	plt.Title.Text = "Sun exposure through year (W/m²)"
 
 	type xy struct {
 		day, tod  time.Time
 		intensity float64
+		foliage   bool
 		col, row  int
 	}
 
@@ -32,6 +35,7 @@ func (o *IntensityOverTime) HeatMap() *plot.Plot {
 		xy := &xys[i]
 		xy.day, xy.tod = splitTime(sun.T)
 		xy.intensity = sun.GlobalIntensity(o.elevationFeet)
+		xy.foliage = sun.Foliage
 		xy.col = int(xy.day.Sub(startDay) / (24 * time.Hour))
 		xy.row = int(xy.tod.Sub(splitTimeDay) / o.increment)
 		if xy.col > cMax {
@@ -51,32 +55,50 @@ func (o *IntensityOverTime) HeatMap() *plot.Plot {
 
 	// Construct the grid.
 	var intensity [][]float64
+	var foliage [][]float64
 	for i := range xys {
 		xy := &xys[i]
 		for xy.col >= len(intensity) {
 			intensity = append(intensity, make([]float64, rMax-rMin+1))
+			foliage = append(foliage, make([]float64, rMax-rMin+1))
 		}
 		if xy.row < rMin || xy.row > rMax {
 			continue
 		}
-		intensity[xy.col][xy.row-rMin] = xy.intensity
+		if xy.foliage {
+			intensity[xy.col][xy.row-rMin] = math.NaN()
+			foliage[xy.col][xy.row-rMin] = xy.intensity
+		} else {
+			intensity[xy.col][xy.row-rMin] = xy.intensity
+			foliage[xy.col][xy.row-rMin] = math.NaN()
+		}
 	}
 	grid := &sunIntensityGrid{intensity, startDay, startTOD, o.increment}
+	fGrid := &sunIntensityGrid{foliage, startDay, startTOD, o.increment}
 
 	// Finally, construct the heat map.
 	pal := palette.Heat(256, 1)
 	hm := plotter.NewHeatMap(grid, pal)
 	hm.Underflow = color.Black
 	hm.Overflow = color.White
+	hm.NaN = color.Transparent
 	// Even in vector formats, a rasterized heatmap makes more sense.
+	hm.Rasterized = true
+	plt.Add(hm)
+
+	fPal := foliagePalette{pal}
+	hm = plotter.NewHeatMap(fGrid, fPal)
+	hm.NaN = color.Transparent
 	hm.Rasterized = true
 	plt.Add(hm)
 
 	// Construct a legend.
 	thumbs := plotter.PaletteThumbnailers(pal)
 	plt.Legend.Add("Full shade", thumbs[0])
-	plt.Legend.Add("Partial shade", thumbs[len(thumbs)/2])
+	//plt.Legend.Add("Partial shade", thumbs[len(thumbs)/2])
 	plt.Legend.Add("Direct sun", thumbs[len(thumbs)-1])
+	thumbs = plotter.PaletteThumbnailers(fPal)
+	plt.Legend.Add("Foliage shade", thumbs[0])
 
 	return plt
 }
@@ -120,4 +142,18 @@ func (si *sunIntensityGrid) Max() float64 {
 	// TODO: It's higher at higher elevations. Maybe I should just let
 	// gonum find the max?
 	return 1042
+}
+
+type foliagePalette struct {
+	p palette.Palette
+}
+
+func (p foliagePalette) Colors() []color.Color {
+	sub := p.p.Colors()
+	out := make([]color.Color, len(sub))
+	for i, c := range sub {
+		r, g, b, a := c.RGBA()
+		out[i] = color.RGBA64{uint16(g), uint16(r / 2), uint16(b), uint16(a)}
+	}
+	return out
 }
