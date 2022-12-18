@@ -47,7 +47,7 @@ func main() {
 
 	var cameraOffset = [3]float64{40 * 12, -30 * 12, 10 * 12}
 	m.Render(testPos, cameraOffset, time.Date(2022, 6, 1, 12, 0, 0, 0, time.Local), "render.png")
-	//return
+	return
 
 	m.AddFoliage("house-trees.stl")
 

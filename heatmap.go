@@ -42,7 +42,7 @@ func (o *IntensityOverTime) heatMap(plt *plot.Plot, sorted bool) {
 	type xy struct {
 		day       time.Time
 		tod       time.Duration
-		sun       SunPos
+		sun       SunLight
 		intensity float64
 		col, row  int
 	}

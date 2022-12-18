@@ -10,8 +10,8 @@ import (
 
 func (m *ShadeModel) Render(testPos, cameraOffset [3]float64, t time.Time, outPath string) {
 	m.withPOV(testPos, outPath, func(src io.Writer) {
-		utc := t.In(time.UTC)
-		fmt.Fprintf(src, "setSun(%d,%d,%d, %d,%d, %d)\n", utc.Year(), utc.Month(), utc.Day(), utc.Hour(), utc.Minute(), 0)
+		p := GetSunPos(t, m.lat, m.lon)
+		fmt.Fprintf(src, "setSun(%g, %g)\n", p.Altitude, p.Azimuth)
 		if err := testSceneTemplate.Execute(src, &cameraOffset); err != nil {
 			log.Fatalf("writing POV-Ray input: %s", err)
 		}

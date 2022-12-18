@@ -103,7 +103,7 @@ func (m *ShadeModel) addLayer(stlPath string, trans func(time.Time) float64, fol
 }
 
 type IntensityOverTime struct {
-	sunPos []SunPos
+	sunPos []SunLight
 
 	elevationFeet float64
 	increment     time.Duration
@@ -126,9 +126,9 @@ func (m *ShadeModel) IntensityOverYear(year int, testPos [3]float64) *IntensityO
 		meshes = append(meshes, l.mesh)
 	}
 	ck := MakeCacheKey(meshes, m.lat, m.lon, testPos, times)
-	var sunPos []SunPos
+	var sunPos []SunLight
 	if !ck.Load(&sunPos) {
-		sunPos = m.computeSunPos(testPos, times)
+		sunPos = m.computeSunLight(testPos, times)
 		ck.Save(sunPos)
 	}
 

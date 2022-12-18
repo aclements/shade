@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +9,8 @@ import (
 	"os/exec"
 	"text/template"
 	"time"
+
+	"github.com/sixdouglas/suncalc"
 )
 
 // TODO: SunPos is a weird type. It should probably just be time and
@@ -18,22 +19,40 @@ import (
 type SunPos struct {
 	T time.Time
 
-	Light   float64 // Multiplier of direct illumination, between 0 and 1
-	Foliage bool    // This is blocked solely by foliage
-
 	// Altitude is the altitude of the sun in the alt-azimuth coordinate
 	// system, in degrees. This ranges from -90 to 90, where 0 is the
 	// horizon and 90 is directly overhead.
 	Altitude float64
+
+	// Azimuth is the azimuth of the sun in the alt-azimuth coordinate
+	// system, in degrees. This ranges from 0 to 360, where 0 is north
+	// and 90 is east.
+	Azimuth float64
+}
+
+// GetSunPos returns the sun position in horizonal alt-azimuth
+// coordinates at the given time and location. Latitude and longitude
+// are in degrees, where north and east are positive, respectively.
+// Elevation is in feet.
+func GetSunPos(t time.Time, latitude, longitude float64) SunPos {
+	p := suncalc.GetPosition(t, latitude, longitude)
+	// suncalc returns angles in radians (even though it takes latitude
+	// and longitude in degrees).
+	const rad2deg = 180 / math.Pi
+	return SunPos{t, p.Altitude * rad2deg, p.Azimuth * rad2deg}
+}
+
+type SunLight struct {
+	SunPos
+
+	Light   float64 // Multiplier of direct illumination, between 0 and 1
+	Foliage bool    // This is blocked solely by foliage
 }
 
 // GlobalIntensity computes the total global radiation of the sun (aka
 // solar flux, aka insolation) at this position on a plane perpendicular
 // to the sun, in W/m².
-func (p SunPos) GlobalIntensity(elevationFeet float64) (wattsPerSquareMeter float64) {
-	// TODO: Account for transmissivity of foliage if !Lit (maybe I
-	// should rename that Direct)
-
+func (p SunLight) GlobalIntensity(elevationFeet float64) (wattsPerSquareMeter float64) {
 	// This is based on https://www.pveducation.org/pvcdrom/properties-of-sunlight/air-mass
 	if p.Altitude < 0 {
 		return 0
@@ -63,30 +82,37 @@ func (p SunPos) GlobalIntensity(elevationFeet float64) (wattsPerSquareMeter floa
 	return (0.1 + p.Light) * iDirect
 }
 
-func (m *ShadeModel) computeSunPos(testPos [3]float64, times []time.Time) []SunPos {
+func (m *ShadeModel) computeSunLight(testPos [3]float64, times []time.Time) []SunLight {
+	poses := make([]SunLight, len(times))
+	for i, t := range times {
+		poses[i].SunPos = GetSunPos(t, m.lat, m.lon)
+	}
+
 	outData := m.withPOV(testPos, "", func(src io.Writer) {
-		for _, t := range times {
-			// Convert the time to UTC and use a 0 timezone meridian. This
-			// is easier than figuring out the meridian. SunPos will
-			// complain, but it works fine.
-			utc := t.In(time.UTC)
-			fmt.Fprintf(src, "setSun(%d,%d,%d, %d,%d, %d)\n", utc.Year(), utc.Month(), utc.Day(), utc.Hour(), utc.Minute(), 0)
+		for _, p := range poses {
+			if p.Altitude < 0 {
+				// Don't bother testing points below the horizon
+				continue
+			}
+			fmt.Fprintf(src, "setSun(%g, %g)\n", p.Altitude, p.Azimuth)
 			for i := range m.layers {
 				fmt.Fprintf(src, "testHit(mesh%d)\n", i)
 			}
 		}
 	})
 
-	poses := make([]SunPos, len(times))
-	for i, t := range times {
-		al := float64(int32(binary.LittleEndian.Uint32(outData[0:]))) / math.MaxInt32 * 90
-		outData = outData[4:]
+	for i, p := range poses {
+		if p.Altitude < 0 {
+			poses[i].Light = 0
+			poses[i].Foliage = false
+			continue
+		}
 		light := 1.0
 		building, foliage := false, false
 		for _, l := range m.layers {
 			hit := (outData[0] != 0)
 			if hit && light != 0 {
-				light *= l.transmissivity(t)
+				light *= l.transmissivity(times[i])
 			}
 			if hit {
 				if l.foliage {
@@ -97,7 +123,8 @@ func (m *ShadeModel) computeSunPos(testPos [3]float64, times []time.Time) []SunP
 			}
 			outData = outData[1:]
 		}
-		poses[i] = SunPos{T: t, Light: light, Foliage: foliage && !building, Altitude: al}
+		poses[i].Light = light
+		poses[i].Foliage = foliage && !building
 	}
 	if len(outData) > 0 {
 		log.Fatalf("unexpected left-over output from POV-Ray (%d bytes)", len(outData))
@@ -187,11 +214,9 @@ var povTemplate = template.Must(template.New("pov").Parse(`
 #version 3.7;
 
 #include "colors.inc"
-#include "sunpos.inc"
 
-#macro setSun(Y,M,D, H,Min, Lstm)
-  #declare Sun = SunPos(Y,M,D, H,Min, Lstm, {{.Lat}},{{.Lon}});
-  #write(TESTOUT, sint32le Al / 90 * 2147483647)
+#macro setSun(Al, Az)
+  #declare Sun = vrotate(<0,0,1000000000>,<-Al,Az+180,0>);
 #end
 #macro testHit(Mesh)
   #local Norm = <0,0,0>;
