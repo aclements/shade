@@ -1,13 +1,7 @@
 package main
 
 import (
-	"fmt"
-	"io"
-	"log"
 	"math"
-	"os"
-	"os/exec"
-	"text/template"
 	"time"
 
 	"github.com/sixdouglas/suncalc"
@@ -134,99 +128,3 @@ func (m *ShadeModel) computeSunLight(testPos [3]float64, times []time.Time) []Su
 	}
 	return light
 }
-
-func (m *ShadeModel) withPOV(testPos [3]float64, output string, cb func(src io.Writer)) []byte {
-	// The POV-Ray coordinate system looks like:
-	//
-	//	Y
-	//	|  Z/north
-	//	| /
-	//	|/____ X/east
-	//
-	// So we have to swap Y and Z between the STL and POV systems
-
-	// As of Pov-Ray 3.7, it only supports input from stdin on DOS (?!)
-	src, err := os.CreateTemp("", "shade-*.pov")
-	if err != nil {
-		log.Fatalf("creating temporary file: %s", err)
-	}
-	defer os.Remove(src.Name())
-
-	out, err := os.CreateTemp("", "shade-*.out")
-	if err != nil {
-		log.Fatalf("creating temporary file: %s", err)
-	}
-	out.Close()
-	defer os.Remove(out.Name())
-
-	var tmplArgs struct {
-		Lat, Lon float64
-		TestPos  [3]float64
-		OutPath  string
-	}
-	tmplArgs.Lat, tmplArgs.Lon = m.lat, m.lon
-	tmplArgs.TestPos = testPos
-	tmplArgs.OutPath = out.Name()
-	if err := povTemplate.Execute(src, &tmplArgs); err != nil {
-		log.Fatalf("writing POV-Ray input: %s", err)
-	}
-	for i, l := range m.layers {
-		fmt.Fprintf(src, "#declare mesh%d = ", i)
-		if err := l.mesh.ToPOV(src); err != nil {
-			log.Fatalf("writing POV-Ray input: %s", err)
-		}
-	}
-	cb(src)
-	if err := src.Close(); err != nil {
-		log.Fatalf("writing POV-Ray input: %s", err)
-	}
-
-	// Run povray
-	args := []string{
-		"+I" + src.Name(),   // Input
-		"-GD", "-GR", "-GS", // Disable most output
-	}
-	if output != "" {
-		args = append(args,
-			"+O"+output, // Output file
-			"+P",        // Pause
-			"+A",        // Anti-alias
-		)
-	} else {
-		args = append(args, []string{
-			"-F",         // Disable file output
-			"-D",         // Disable display preview
-			"+H1", "+W1", // 1x1 pixel output (0x0 isn't supported)
-		}...)
-	}
-	pov := exec.Command("povray", args...)
-	pov.Stdout, pov.Stderr = os.Stdout, os.Stderr
-	if err := pov.Run(); err != nil {
-		log.Fatalf("running POV-Ray: %s", err)
-	}
-
-	// Read the output
-	outData, err := os.ReadFile(out.Name())
-	if err != nil {
-		log.Fatalf("reading shade output file: %s", err)
-	}
-	return outData
-}
-
-var povTemplate = template.Must(template.New("pov").Parse(`
-#version 3.7;
-
-#include "colors.inc"
-
-#macro setSun(Al, Az)
-  #declare Sun = vrotate(<0,0,1000000000>,<-Al,Az,0>);
-#end
-#macro testHit(Mesh)
-  #local Norm = <0,0,0>;
-  #local Intersect = trace(Mesh, TestPos, Sun - TestPos, Norm);
-  #local Hit = (vlength(Norm)!=0);
-  #write(TESTOUT, uint8 Hit)
-#end
-#fopen TESTOUT "{{.OutPath}}" write
-#declare TestPos = <{{index .TestPos 0}}, {{index .TestPos 2}}, {{index .TestPos 1}}>;
-`))

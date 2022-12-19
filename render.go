@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"os/exec"
 	"text/template"
 	"time"
 )
@@ -80,4 +82,70 @@ text {
 	rotate <0, -90, 0>
 	translate TestPos + <0, 0, 3*12 + 6>
   }
+`))
+
+func (m *ShadeModel) withPOV(testPos [3]float64, output string, cb func(src io.Writer)) {
+	// The POV-Ray coordinate system looks like:
+	//
+	//	Y
+	//	|  Z/north
+	//	| /
+	//	|/____ X/east
+	//
+	// So we have to swap Y and Z between the STL and POV systems
+
+	// As of Pov-Ray 3.7, it only supports input from stdin on DOS (?!)
+	src, err := os.CreateTemp("", "shade-*.pov")
+	if err != nil {
+		log.Fatalf("creating temporary file: %s", err)
+	}
+	defer os.Remove(src.Name())
+
+	var tmplArgs struct {
+		Lat, Lon float64
+		TestPos  [3]float64
+	}
+	tmplArgs.Lat, tmplArgs.Lon = m.lat, m.lon
+	tmplArgs.TestPos = testPos
+	if err := povTemplate.Execute(src, &tmplArgs); err != nil {
+		log.Fatalf("writing POV-Ray input: %s", err)
+	}
+	for i, l := range m.layers {
+		fmt.Fprintf(src, "#declare mesh%d = ", i)
+		if err := l.mesh.ToPOV(src); err != nil {
+			log.Fatalf("writing POV-Ray input: %s", err)
+		}
+	}
+	cb(src)
+	if err := src.Close(); err != nil {
+		log.Fatalf("writing POV-Ray input: %s", err)
+	}
+
+	// Run povray
+	args := []string{
+		"+I" + src.Name(),   // Input
+		"-GD", "-GR", "-GS", // Disable most output
+	}
+	args = append(args,
+		"+O"+output, // Output file
+		"+P",        // Pause
+		"+A",        // Anti-alias
+		//"-D",         // Disable display preview
+	)
+	pov := exec.Command("povray", args...)
+	pov.Stdout, pov.Stderr = os.Stdout, os.Stderr
+	if err := pov.Run(); err != nil {
+		log.Fatalf("running POV-Ray: %s", err)
+	}
+}
+
+var povTemplate = template.Must(template.New("pov").Parse(`
+#version 3.7;
+
+#include "colors.inc"
+
+#macro setSun(Al, Az)
+  #declare Sun = vrotate(<0,0,1000000000>,<-Al,Az,0>);
+#end
+#declare TestPos = <{{index .TestPos 0}}, {{index .TestPos 2}}, {{index .TestPos 1}}>;
 `))
