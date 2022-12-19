@@ -37,9 +37,11 @@ type SunPos struct {
 func GetSunPos(t time.Time, latitude, longitude float64) SunPos {
 	p := suncalc.GetPosition(t, latitude, longitude)
 	// suncalc returns angles in radians (even though it takes latitude
-	// and longitude in degrees).
+	// and longitude in degrees). Also, it uses a non-standard
+	// convention for azimuth where -90 is east, 0 is south, 90 is west,
+	// and 180 is north.
 	const rad2deg = 180 / math.Pi
-	return SunPos{t, p.Altitude * rad2deg, p.Azimuth * rad2deg}
+	return SunPos{t, p.Altitude * rad2deg, p.Azimuth*rad2deg + 180}
 }
 
 type SunLight struct {
@@ -216,7 +218,7 @@ var povTemplate = template.Must(template.New("pov").Parse(`
 #include "colors.inc"
 
 #macro setSun(Al, Az)
-  #declare Sun = vrotate(<0,0,1000000000>,<-Al,Az+180,0>);
+  #declare Sun = vrotate(<0,0,1000000000>,<-Al,Az,0>);
 #end
 #macro testHit(Mesh)
   #local Norm = <0,0,0>;
