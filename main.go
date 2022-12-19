@@ -14,19 +14,12 @@ import (
 //
 // The SketchUp mesh is in inches.
 //
-// The red/green/blue SketchUp coordinate system maps to POV like this:
+// The red/green/blue SketchUp coordinate system maps to STL like this:
 //
-//   blue/Y
-//     |  green/Z/North
+//   blue/Z
+//     |  green/Y/North
 //     | /
 //     |/____ red/X
-
-type state uint8
-
-const (
-	stateShade state = iota
-	stateSun
-)
 
 func main() {
 	// In this model, Z=0 is the 90' reference on the architectural
