@@ -3,7 +3,6 @@ package main
 import (
 	"log"
 	"os"
-	"time"
 
 	"gonum.org/v1/plot"
 	"gonum.org/v1/plot/vg"
@@ -45,9 +44,9 @@ func main() {
 	m := NewShadeModel(lat, lon, elev)
 	m.AddBuildings("house.stl")
 
-	var cameraOffset = [3]float64{40 * 12, -30 * 12, 10 * 12}
-	m.Render(testPos, cameraOffset, time.Date(2022, 6, 1, 12, 0, 0, 0, time.Local), "render.png")
-	return
+	//var cameraOffset = [3]float64{40 * 12, -30 * 12, 10 * 12}
+	//m.Render(testPos, cameraOffset, time.Date(2022, 6, 1, 12, 0, 0, 0, time.Local), "render.png")
+	//return
 
 	m.AddFoliage("house-trees.stl")
 

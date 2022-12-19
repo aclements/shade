@@ -9,15 +9,13 @@ import (
 	"strings"
 )
 
-type Mesh struct {
+type STLMesh struct {
 	Header string
-
-	Verts [][3]float32
-	Tris  [][3]int
+	Mesh
 }
 
-func ReadSTL(r io.Reader) (*Mesh, error) {
-	m := new(Mesh)
+func ReadSTL(r io.Reader) (*STLMesh, error) {
+	m := new(STLMesh)
 
 	var header struct {
 		H    [80]byte
@@ -28,9 +26,9 @@ func ReadSTL(r io.Reader) (*Mesh, error) {
 	}
 	m.Header = strings.TrimRight(string(header.H[:]), " ")
 
-	vertMap := make(map[[3]float32]int)
+	vertMap := make(map[[3]float64]int)
 
-	var vert [3]float32
+	var vert [3]float64
 	var tri [3]int
 	triBuf := make([]byte, 4*3*4+2)
 	for i := 0; i < int(header.NTri); i++ {
@@ -43,7 +41,7 @@ func ReadSTL(r io.Reader) (*Mesh, error) {
 			// Read the coordinates of this vertex.
 			for c := range vert {
 				const start = 3 * 4 // Skip normal
-				vert[c] = math.Float32frombits(binary.LittleEndian.Uint32(triBuf[start+12*v+4*c:]))
+				vert[c] = float64(math.Float32frombits(binary.LittleEndian.Uint32(triBuf[start+12*v+4*c:])))
 			}
 			// Add the vertex to the vertex set.
 			vertIndex, ok := vertMap[vert]

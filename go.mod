@@ -12,5 +12,6 @@ require (
 	github.com/sixdouglas/suncalc v0.0.0-20210131155613-475bb71c60c4 // indirect
 	golang.org/x/image v0.0.0-20220902085622-e7cb96979f69 // indirect
 	golang.org/x/text v0.3.7 // indirect
+	gonum.org/v1/gonum v0.12.0 // indirect
 	gonum.org/v1/plot v0.12.0 // indirect
 )

@@ -98,7 +98,7 @@ func (m *ShadeModel) addLayer(stlPath string, trans func(time.Time) float64, fol
 	if err != nil {
 		return err
 	}
-	m.layers = append(m.layers, &shadeLayer{mesh, trans, foliage})
+	m.layers = append(m.layers, &shadeLayer{&mesh.Mesh, trans, foliage})
 	return nil
 }
 
@@ -110,8 +110,6 @@ type IntensityOverTime struct {
 }
 
 func (m *ShadeModel) IntensityOverYear(year int, testPos [3]float64) *IntensityOverTime {
-	// TODO: If I compute my own sun positions, I can skip the times
-	// below the horizon entirely.
 	var times []time.Time
 	t := time.Date(year, 1, 1, 0, 0, 0, 0, time.Local)
 	increment := time.Minute
@@ -120,7 +118,8 @@ func (m *ShadeModel) IntensityOverYear(year int, testPos [3]float64) *IntensityO
 		t = t.Add(increment)
 	}
 
-	// TODO: Maybe include source of ComputeSunPos (and ToPOV?) in CacheKey?
+	// TODO: Maybe include source of computeSunLight and related
+	// functions in CacheKey?
 	var meshes []*Mesh
 	for _, l := range m.layers {
 		meshes = append(meshes, l.mesh)

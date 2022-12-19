@@ -11,10 +11,8 @@ import (
 	"time"
 
 	"github.com/sixdouglas/suncalc"
+	"gonum.org/v1/gonum/spatial/r3"
 )
-
-// TODO: SunPos is a weird type. It should probably just be time and
-// position and I should have something else with time and intensity.
 
 type SunPos struct {
 	T time.Time
@@ -42,6 +40,20 @@ func GetSunPos(t time.Time, latitude, longitude float64) SunPos {
 	// and 180 is north.
 	const rad2deg = 180 / math.Pi
 	return SunPos{t, p.Altitude * rad2deg, p.Azimuth*rad2deg + 180}
+}
+
+func (p SunPos) Ray(origin [3]float64) Ray {
+	const deg2rad = math.Pi / 180
+	al := p.Altitude * deg2rad
+	az := p.Azimuth * deg2rad
+	return Ray{
+		Origin: r3.Vec{X: origin[0], Y: origin[1], Z: origin[2]},
+		Dir: r3.Unit(r3.Vec{
+			X: math.Sin(az) * math.Cos(al),
+			Y: math.Cos(az) * math.Cos(al),
+			Z: math.Sin(al),
+		}),
+	}
 }
 
 type SunLight struct {
@@ -85,36 +97,29 @@ func (p SunLight) GlobalIntensity(elevationFeet float64) (wattsPerSquareMeter fl
 }
 
 func (m *ShadeModel) computeSunLight(testPos [3]float64, times []time.Time) []SunLight {
-	poses := make([]SunLight, len(times))
+	// TODO: This could be much more efficient. Do traces in parallel
+	// and since I only care about hit tests for this, not exact
+	// intersection point, add a fast path that caches the last triangle
+	// intersection and retests just that triangle on the next ray.
+	light := make([]SunLight, len(times))
 	for i, t := range times {
-		poses[i].SunPos = GetSunPos(t, m.lat, m.lon)
-	}
-
-	outData := m.withPOV(testPos, "", func(src io.Writer) {
-		for _, p := range poses {
-			if p.Altitude < 0 {
-				// Don't bother testing points below the horizon
-				continue
-			}
-			fmt.Fprintf(src, "setSun(%g, %g)\n", p.Altitude, p.Azimuth)
-			for i := range m.layers {
-				fmt.Fprintf(src, "testHit(mesh%d)\n", i)
-			}
-		}
-	})
-
-	for i, p := range poses {
-		if p.Altitude < 0 {
-			poses[i].Light = 0
-			poses[i].Foliage = false
+		out := &light[i]
+		sunPos := GetSunPos(t, m.lat, m.lon)
+		out.SunPos = sunPos
+		if sunPos.Altitude < 0 {
+			out.Light = 0
+			out.Foliage = false
 			continue
 		}
+
+		sunRay := sunPos.Ray(testPos)
 		light := 1.0
 		building, foliage := false, false
 		for _, l := range m.layers {
-			hit := (outData[0] != 0)
+			tRay, hit := sunRay.IntersectMesh(l.mesh)
+			_ = tRay
 			if hit && light != 0 {
-				light *= l.transmissivity(times[i])
+				light *= l.transmissivity(t)
 			}
 			if hit {
 				if l.foliage {
@@ -123,15 +128,11 @@ func (m *ShadeModel) computeSunLight(testPos [3]float64, times []time.Time) []Su
 					building = true
 				}
 			}
-			outData = outData[1:]
 		}
-		poses[i].Light = light
-		poses[i].Foliage = foliage && !building
+		out.Light = light
+		out.Foliage = foliage && !building
 	}
-	if len(outData) > 0 {
-		log.Fatalf("unexpected left-over output from POV-Ray (%d bytes)", len(outData))
-	}
-	return poses
+	return light
 }
 
 func (m *ShadeModel) withPOV(testPos [3]float64, output string, cb func(src io.Writer)) []byte {
